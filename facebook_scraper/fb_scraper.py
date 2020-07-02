@@ -516,15 +516,3 @@ class FacebookScraper:
         logging.info(f"extract posts ...")
         page_iterator = PageParser.iterator(page_name, self.connector)
         return self._extract_content(page_iterator, PostExtractor)
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
-    con = FacebookConnector()
-    scraper = FacebookScraper(con)
-
-    i = 0
-    for video in scraper.extract_posts("3HOFoundation"):
-        print(video)
-        i += 1
-    print(f"{i} videos fetched!")
