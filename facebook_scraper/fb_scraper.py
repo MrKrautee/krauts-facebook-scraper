@@ -1,6 +1,7 @@
 import re
 import json
 import itertools
+import time
 from json import JSONDecodeError
 from datetime import datetime
 from functools import partial
@@ -13,7 +14,7 @@ from urllib.parse import urljoin
 
 from typing import List
 
-from utils import make_html_element, decode_css_url
+from facebook_scraper.utils import make_html_element, decode_css_url
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +30,23 @@ class FacebookConnector:
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/76.0.3809.87 Safari/537.36"
     )
+    user_agent2 = (
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        #"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        #"Chrome/81.0.4044.129 Safari/537.36"
+        "Chrome/76.0.3809.87 Safari/537.36"
+    )
     cookie = 'locale=en_US;'
     default_headers = {
         'User-Agent': user_agent,
-        'Accept-Language': 'en-US,en;q=0.5',
+         'Accept-Language': 'en-US,en;q=0.5',
+        #'Accept-Language': 'en-US,en;q=0.9,de;q=0.8',
+        #'Accept': (
+        #            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        #            "image/webp,image/apng,*/*;q=0.8,"
+        #            "application/signed-exchange;v=b3;q=0.9"
+        #          ),
         'cookie': cookie,
     }
 
@@ -82,7 +96,7 @@ class PageParser:
             if next_page_url:
                 page_url = urljoin(FB_MOBILE_BASE_URL, next_page_url)
             else:
-                url = None
+                page_url = None
 
     def get_html(self) -> Element:
         return self.html
@@ -316,47 +330,55 @@ class VideoExtractor(Extractor):
         # sometime links are broken
         # maybe catch error, or skip when story_body not found
         post_body = html.find("div.story_body_container", first=True)
+        # sometimes no post page
+        if post_body:
 
-        # publish_time
-        data_ft = {}
-        try:
-            # parent element has data-store with id and src
-            parent = next(post_body.element.iterancestors())
-            data_ft_str = parent.attrib['data-ft']
-            data_ft = json.loads(data_ft_str)
-        except JSONDecodeError as ex:
-            logger.error("Error parsing data-store JSON: %r", ex)
-        except KeyError:
-            logger.error("data-store attribute not found")
-        timestamp = data_ft['page_insights'][self._page_id]['post_context']['publish_time']
-        publish_time = datetime.fromtimestamp(timestamp)
-        # description
-        nodes = post_body.find('p, header')
-        if nodes:
-            post_text = []
-            shared_text = []
-            ended = False
-            for node in nodes[1:]:
-                if node.tag == 'header':
-                    ended = True
+            # publish_time
+            data_ft = {}
+            try:
+                # parent element has data-store with id and src
+                parent = next(post_body.element.iterancestors())
+                data_ft_str = parent.attrib['data-ft']
+                data_ft = json.loads(data_ft_str)
+            except JSONDecodeError as ex:
+                logger.error("Error parsing data-store JSON: %r", ex)
+            except KeyError:
+                logger.error("data-store attribute not found")
+            timestamp = data_ft['page_insights'][self._page_id]['post_context']['publish_time']
+            publish_time = timestamp
+            # description
+            nodes = post_body.find('p, header')
+            if nodes:
+                post_text = []
+                shared_text = []
+                ended = False
+                for node in nodes[1:]:
+                    if node.tag == 'header':
+                        ended = True
 
-                # Remove '... More'
-                # This button is meant to display the hidden text that is already loaded
-                # Not to be confused with the 'More' that opens the article in a new page
-                if node.tag == 'p':
-                    node = make_html_element(
-                        html=node.html.replace('>… <', '><', 1).replace('>More<', '', 1)
-                    )
+                    # Remove '... More'
+                    # This button is meant to display the hidden text that is already loaded
+                    # Not to be confused with the 'More' that opens the article in a new page
+                    if node.tag == 'p':
+                        node = make_html_element(
+                            html=node.html.replace('>… <', '><', 1).replace('>More<', '', 1)
+                        )
 
-                if not ended:
-                    post_text.append(node.text)
-                else:
-                    shared_text.append(node.text)
+                    if not ended:
+                        post_text.append(node.text)
+                    else:
+                        shared_text.append(node.text)
 
-            text = '\n'.join(itertools.chain(post_text, shared_text))
-            post_text = '\n'.join(post_text)
-            shared_text = '\n'.join(shared_text)
+                text = '\n'.join(itertools.chain(post_text, shared_text))
+                post_text = '\n'.join(post_text)
+                shared_text = '\n'.join(shared_text)
 
+        else:
+            logger.debug(f"!!-->cant get details from {video_url}")
+            publish_time = ""
+            text = ""
+            post_text = ""
+            shared_text = ""
         return {
             "publish_time": publish_time,
             "text": text,
@@ -386,20 +408,102 @@ class VideoExtractor(Extractor):
         return _data_store
 
 
-class FacebookScraper:
+class VideoDetailExtractor:
+
     def __init__(self, connector):
         self.connector = connector
+
+    def extract(self, video_data:list):
+        videos = []
+        for video in video_data:
+            video_url = video['url']
+            logger.debug(f"get details from {video_url}")
+            response = self.connector.get(video_url)
+            html = response.html
+            # sometime links are broken
+            # maybe catch error, or skip when story_body not found
+            post_body = html.find("div.story_body_container", first=True)
+            # sometimes no post page
+            if post_body:
+
+                # publish_time
+                data_ft = {}
+                try:
+                    # parent element has data-store with id and src
+                    parent = next(post_body.element.iterancestors())
+                    data_ft_str = parent.attrib['data-ft']
+                    data_ft = json.loads(data_ft_str)
+                except JSONDecodeError as ex:
+                    logger.error("Error parsing data-store JSON: %r", ex)
+                except KeyError:
+                    logger.error("data-store attribute not found")
+                timestamp = data_ft['page_insights'][self._page_id]['post_context']['publish_time']
+                publish_time = timestamp
+                # description
+                nodes = post_body.find('p, header')
+                if nodes:
+                    post_text = []
+                    shared_text = []
+                    ended = False
+                    for node in nodes[1:]:
+                        if node.tag == 'header':
+                            ended = True
+
+                        # Remove '... More'
+                        # This button is meant to display the hidden text that is already loaded
+                        # Not to be confused with the 'More' that opens the article in a new page
+                        if node.tag == 'p':
+                            node = make_html_element(
+                                html=node.html.replace('>… <', '><', 1).replace('>More<', '', 1)
+                            )
+
+                        if not ended:
+                            post_text.append(node.text)
+                        else:
+                            shared_text.append(node.text)
+
+                    text = '\n'.join(itertools.chain(post_text, shared_text))
+                    post_text = '\n'.join(post_text)
+                    shared_text = '\n'.join(shared_text)
+
+            else:
+                logger.debug(f"!!-->cant get details from {video_url}")
+                publish_time = ""
+                text = ""
+                post_text = ""
+                shared_text = ""
+            videos.append( {
+                "publish_time": publish_time,
+                "text": text,
+                'post_text': post_text,
+                'shared_text': shared_text,
+                **video
+            })
+        return videos
+
+class FacebookScraper:
+    def __init__(self, connector=FacebookConnector(), request_delay=None):
+        self.connector = connector
+        self.request_delay = request_delay
 
     def _extract_content(self, page_iterator, extractor_cls) -> dict:
         extractor = extractor_cls(self.connector)
         for page in page_iterator:
             for data_obj in extractor.extract(page):
                 yield data_obj
+                if self.request_delay:
+                    time.sleep(self.request_delay)
 
     def extract_videos(self, page_name) -> dict:
         logging.info(f"extract videos ...")
         page_iterator = VideoGridPageParser.iterator(page_name, self.connector)
-        return self._extract(page_iterator, VideoExtractor)
+        return self._extract_content(page_iterator, VideoExtractor)
+
+    def extract_video_ids(self, page_name) -> dict:
+        return {}
+
+    def extract_video_details(self, video_data: list) -> dict:
+        return {}
 
     def extract_posts(self, page_name) -> dict:
         logging.info(f"extract posts ...")
