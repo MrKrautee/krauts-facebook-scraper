@@ -3,8 +3,6 @@ import json
 import itertools
 import time
 from json import JSONDecodeError
-from datetime import datetime
-from functools import partial
 
 
 import logging
@@ -21,32 +19,18 @@ logger = logging.getLogger(__name__)
 FB_MOBILE_BASE_URL = "https://m.facebook.com"
 DEFAULT_PAGE_LIMIT = 10
 
+
 class FacebookConnector:
     base_url = FB_MOBILE_BASE_URL
-
-
     user_agent = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/76.0.3809.87 Safari/537.36"
     )
-    user_agent2 = (
-        "Mozilla/5.0 (X11; Linux x86_64) "
-        #"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        #"Chrome/81.0.4044.129 Safari/537.36"
-        "Chrome/76.0.3809.87 Safari/537.36"
-    )
     cookie = 'locale=en_US;'
     default_headers = {
         'User-Agent': user_agent,
-         'Accept-Language': 'en-US,en;q=0.5',
-        #'Accept-Language': 'en-US,en;q=0.9,de;q=0.8',
-        #'Accept': (
-        #            "text/html,application/xhtml+xml,application/xml;q=0.9,"
-        #            "image/webp,image/apng,*/*;q=0.8,"
-        #            "application/signed-exchange;v=b3;q=0.9"
-        #          ),
+        'Accept-Language': 'en-US,en;q=0.5',
         'cookie': cookie,
     }
 
@@ -63,19 +47,26 @@ class FacebookConnector:
 
     def get(self, url, **kwargs):
         try:
-            response = self.session.get(url=url, **self.requests_kwargs, **kwargs)
+            response = self.session.get(
+                    url=url, **self.requests_kwargs, **kwargs
+            )
             response.raise_for_status()
             return response
         except RequestException as ex:
-            logger.exception("Exception while requesting URL: %s\nException: %r", url, ex)
+            logger.exception(
+                    "Exception while requesting URL: %s\nException: %r",
+                    url, ex
+            )
             raise
 
 
 class PageParser:
     """ Only for pagination. """
     json_prefix = 'for (;;);'
-    cursor_regex = re.compile(r'href:"(/page_content[^"]+)"')  # First request
-    cursor_regex_2 = re.compile(r'href":"(\\/page_content[^"]+)"')  # Other requests
+    # First request
+    cursor_regex = re.compile(r'href:"(/page_content[^"]+)"')
+    # Other requests
+    cursor_regex_2 = re.compile(r'href":"(\\/page_content[^"]+)"')
     page_path = "posts/"
 
     def __init__(self, page_url, connector):
@@ -109,7 +100,8 @@ class PageParser:
         match = self.cursor_regex_2.search(self.cursor_blob)
         if match:
             value = match.groups()[0]
-            return value.encode('utf-8').decode('unicode_escape').replace('\\/', '/')
+            encoded_value = value.encode('utf-8').decode('unicode_escape')
+            return encoded_value.replace('\\/', '/')  # ?? senseless
         logger.debug("No next page found.")
         return None
 
@@ -122,16 +114,19 @@ class PageParser:
     def _parse_html(self):
         # TODO: Why are we uncommenting HTML?
         self.html = make_html_element(
-            self.response.text.replace('<!--', '').replace('-->', ''), url=self.response.url,
+            self.response.text.replace('<!--', '').replace('-->', ''),
+            url=self.response.url
         )
         self.cursor_blob = self.response.text
 
     def _parse_json(self):
         prefix_length = len(self.json_prefix)
-        data = json.loads(self.response.text[prefix_length:])  # Strip 'for (;;);'
+        # Strip 'for (;;);'
+        data = json.loads(self.response.text[prefix_length:])
         for action in data['payload']['actions']:
             if action['cmd'] == 'replace':
-                self.html = make_html_element(action['html'], url=FB_MOBILE_BASE_URL)
+                self.html = make_html_element(action['html'],
+                                              url=FB_MOBILE_BASE_URL)
             elif action['cmd'] == 'script':
                 self.cursor_blob = action['code']
 
@@ -159,10 +154,11 @@ class Extractor:
     def _get_tags(self, page_html) -> List[Element]:
         tags = page_html.find(self.html_tag)
         if not tags:
-            logger.warning(f"No raw posts (<{self.html_tag}> elements) were found in this page.")
+            logger.warning(f"No raw posts (<{self.html_tag}> elements)"
+                           f"were found in this page.")
             if logger.isEnabledFor(logging.DEBUG):
                 import html2text
-                content = html2text.html2text(html.html)
+                content = html2text.html2text(page_html.html)
                 logger.debug("The page content is:\n %s\n", content)
         return tags
 
@@ -178,22 +174,24 @@ class PostExtractor(Extractor):
     likes_regex = re.compile(r'like_def[^>]*>([0-9,.]+)')
     comments_regex = re.compile(r'cmt_def[^>]*>([0-9,.]+)')
     shares_regex = re.compile(r'([0-9,.]+)\s+Shares', re.IGNORECASE)
-    link_regex = re.compile(r"href=\"https:\/\/lm\.facebook\.com\/l\.php\?u=(.+?)\&amp;h=")
+    link_regex = re.compile(
+            r"href=\"https:\/\/lm\.facebook\.com\/l\.php\?u=(.+?)\&amp;h="
+    )
     photo_link = re.compile(r'href=\"(/[^\"]+/photos/[^\"]+?)\"')
     image_regex = re.compile(
-        r'<a href=\"([^\"]+?)\" target=\"_blank\" class=\"sec\">View Full Size<\/a>',
+        r'<a href=\"([^\"]+?)\" target=\"_blank\" class=\"sec\">'
+        r'View Full Size<\/a>',
         re.IGNORECASE,
     )
     image_regex_lq = re.compile(r"background-image: url\('(.+)'\)")
     post_url_regex = re.compile(r'/story.php\?story_fbid=')
     shares_and_reactions_regex = re.compile(
-        r'<script>.*bigPipe.onPageletArrive\((?P<data>\{.*RelayPrefetchedStreamCache.*\})\);'
-        '.*</script>'
+        r'<script>.*bigPipe.onPageletArrive\((?P<data>\{'
+        r'.*RelayPrefetchedStreamCache.*\})\);.*</script>'
     )
     bad_json_key_regex = re.compile(r'(?P<prefix>[{,])(?P<key>\w+):')
     more_url_regex = re.compile(r'(?<=…\s)<a href="([^"]+)')
     post_story_regex = re.compile(r'href="(\/story[^"]+)" aria')
-
 
     html_tag = "article"
 
@@ -230,8 +228,8 @@ class PostExtractor(Extractor):
         return _data_ft
 
     def _text(self, tag) -> dict:
-
-        # Open this article individually because not all content is fully loaded when skimming
+        # Open this article individually because not all content is fully
+        # loaded when skimming
         # through pages.
         # This ensures the full content can be read.
         element = tag
@@ -240,9 +238,11 @@ class PostExtractor(Extractor):
         if has_more:
             match = self.post_story_regex.search(element.html)
             if match:
-                url = urljoin(FB_MOBILE_BASE_URL, match.groups()[0].replace("&amp;", "&"))
+                url = urljoin(FB_MOBILE_BASE_URL,
+                              match.groups()[0].replace("&amp;", "&"))
                 response = self.connector.get(url)
-                element = response.html.find('.story_body_container', first=True)
+                element = response.html.find('.story_body_container',
+                                             first=True)
 
         nodes = element.find('p, header')
         if nodes:
@@ -252,13 +252,14 @@ class PostExtractor(Extractor):
             for node in nodes[1:]:
                 if node.tag == 'header':
                     ended = True
-
                 # Remove '... More'
-                # This button is meant to display the hidden text that is already loaded
-                # Not to be confused with the 'More' that opens the article in a new page
+                # This button is meant to display the hidden text that is
+                # already loaded. Not to be confused with the 'More' that
+                # opens the article in a new page
                 if node.tag == 'p':
                     node = make_html_element(
-                        html=node.html.replace('>… <', '><', 1).replace('>More<', '', 1)
+                        html=node.html.replace('>… <', '><',
+                                               1).replace('>More<', '', 1)
                     )
 
                 if not ended:
@@ -280,7 +281,6 @@ class PostExtractor(Extractor):
 
 
 class VideoExtractor(Extractor):
-
     _page_id = None
     html_tag = "i"  # videos always in <i> Tag
 
@@ -310,8 +310,9 @@ class VideoExtractor(Extractor):
 
     def _data_from_tag(self, tag) -> dict:
         data_store = self._data_store(tag)
-        video_url = urljoin(FB_MOBILE_BASE_URL, f"story.php?story_fbid="+\
-                      f"{data_store['videoID']}&id={self._page_id}")
+        video_url = urljoin(FB_MOBILE_BASE_URL,
+                            f"story.php?story_fbid={data_store['videoID']}" +
+                            f"&id={self._page_id}")
         video = {
             'page_id': self._page_id,
             'id': data_store['videoID'],
@@ -344,8 +345,8 @@ class VideoExtractor(Extractor):
                 logger.error("Error parsing data-store JSON: %r", ex)
             except KeyError:
                 logger.error("data-store attribute not found")
-            timestamp = data_ft['page_insights'][self._page_id]['post_context']['publish_time']
-            publish_time = timestamp
+            page_insights = data_ft['page_insights'][self._page_id]
+            publish_time = page_insights['post_context']['publish_time']
             # description
             nodes = post_body.find('p, header')
             if nodes:
@@ -357,11 +358,14 @@ class VideoExtractor(Extractor):
                         ended = True
 
                     # Remove '... More'
-                    # This button is meant to display the hidden text that is already loaded
-                    # Not to be confused with the 'More' that opens the article in a new page
+                    # This button is meant to display the hidden text that is
+                    # already loaded. Not to be confused with the 'More' that
+                    # opens the article in a new page.
                     if node.tag == 'p':
                         node = make_html_element(
-                            html=node.html.replace('>… <', '><', 1).replace('>More<', '', 1)
+                            html=node.html.replace(
+                                '>… <', '><', 1
+                            ).replace('>More<', '', 1)
                         )
 
                     if not ended:
@@ -385,7 +389,6 @@ class VideoExtractor(Extractor):
             'post_text': post_text,
             'shared_text': shared_text,
         }
-
 
     def _thumbnail(self, tag) -> str:
         style_attr = tag.attrs["style"]
@@ -413,7 +416,7 @@ class VideoDetailExtractor:
     def __init__(self, connector):
         self.connector = connector
 
-    def extract(self, video_data:list):
+    def extract(self, video_data: list):
         videos = []
         for video in video_data:
             video_url = video['url']
@@ -437,8 +440,8 @@ class VideoDetailExtractor:
                     logger.error("Error parsing data-store JSON: %r", ex)
                 except KeyError:
                     logger.error("data-store attribute not found")
-                timestamp = data_ft['page_insights'][self._page_id]['post_context']['publish_time']
-                publish_time = timestamp
+                page_insights = data_ft['page_insights'][self._page_id]
+                publish_time = page_insights['post_context']['publish_time']
                 # description
                 nodes = post_body.find('p, header')
                 if nodes:
@@ -450,11 +453,14 @@ class VideoDetailExtractor:
                             ended = True
 
                         # Remove '... More'
-                        # This button is meant to display the hidden text that is already loaded
-                        # Not to be confused with the 'More' that opens the article in a new page
+                        # This button is meant to display the hidden text that
+                        # is already loaded. Not to be confused with the 'More'
+                        # that opens the article in a new page.
                         if node.tag == 'p':
                             node = make_html_element(
-                                html=node.html.replace('>… <', '><', 1).replace('>More<', '', 1)
+                                html=node.html.replace(
+                                    '>… <', '><', 1
+                                ).replace('>More<', '', 1)
                             )
 
                         if not ended:
@@ -472,7 +478,7 @@ class VideoDetailExtractor:
                 text = ""
                 post_text = ""
                 shared_text = ""
-            videos.append( {
+            videos.append({
                 "publish_time": publish_time,
                 "text": text,
                 'post_text': post_text,
@@ -480,6 +486,7 @@ class VideoDetailExtractor:
                 **video
             })
         return videos
+
 
 class FacebookScraper:
     def __init__(self, connector=FacebookConnector(), request_delay=None):
