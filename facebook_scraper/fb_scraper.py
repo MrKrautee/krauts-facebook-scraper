@@ -148,8 +148,9 @@ class VideoGridPageParser(PageParser):
 class Extractor:
     html_tag = None
 
-    def __init__(self, connector):
+    def __init__(self, connector, **options):
         self.connector = connector
+        self.options = options
 
     def _get_tags(self, page_html) -> List[Element]:
         tags = page_html.find(self.html_tag)
@@ -292,7 +293,7 @@ class VideoExtractor(Extractor):
             logger.debug(f"found page_id: {page_id}")
             return page_id
         else:
-            logger.debug(f"can't find page_id")
+            logger.debug("can't find page_id")
             return None
 
     def _get_tags(self, page_html) -> List[Element]:
@@ -310,21 +311,25 @@ class VideoExtractor(Extractor):
 
     def _data_from_tag(self, tag) -> dict:
         data_store = self._data_store(tag)
+        video_id = data_store['videoID']
         video_url = urljoin(FB_MOBILE_BASE_URL,
-                            f"story.php?story_fbid={data_store['videoID']}" +
+                            f"story.php?story_fbid={video_id}" +
                             f"&id={self._page_id}")
         video = {
             'page_id': self._page_id,
-            'id': data_store['videoID'],
+            'video_id': video_id,
             'src': data_store['src'],
             'thumbnail': self._thumbnail(tag),
             'url': video_url,
-            **self._details(video_url)
-
         }
+        if self.options.get("details", True):
+            video.update(self.get_details(self._page_id, video_id))
         return video
 
-    def _details(self, video_url):
+    def get_details(self, page_id, video_id):
+        video_url = urljoin(FB_MOBILE_BASE_URL,
+                            f"story.php?story_fbid={video_id}" +
+                            f"&id={page_id}")
         logger.debug(f"get details from {video_url}")
         response = self.connector.get(video_url)
         html = response.html
@@ -345,7 +350,7 @@ class VideoExtractor(Extractor):
                 logger.error("Error parsing data-store JSON: %r", ex)
             except KeyError:
                 logger.error("data-store attribute not found")
-            page_insights = data_ft['page_insights'][self._page_id]
+            page_insights = data_ft['page_insights'][page_id]
             publish_time = page_insights['post_context']['publish_time']
             # description
             nodes = post_body.find('p, header')
@@ -388,6 +393,7 @@ class VideoExtractor(Extractor):
             "text": text,
             'post_text': post_text,
             'shared_text': shared_text,
+            'url': video_url,
         }
 
     def _thumbnail(self, tag) -> str:
@@ -411,81 +417,6 @@ class VideoExtractor(Extractor):
         return _data_store
 
 
-class VideoDetailExtractor:
-
-    def __init__(self, connector):
-        self.connector = connector
-
-    def extract(self, video_data: list):
-        videos = []
-        for video in video_data:
-            video_url = video['url']
-            logger.debug(f"get details from {video_url}")
-            response = self.connector.get(video_url)
-            html = response.html
-            # sometime links are broken
-            # maybe catch error, or skip when story_body not found
-            post_body = html.find("div.story_body_container", first=True)
-            # sometimes no post page
-            if post_body:
-
-                # publish_time
-                data_ft = {}
-                try:
-                    # parent element has data-store with id and src
-                    parent = next(post_body.element.iterancestors())
-                    data_ft_str = parent.attrib['data-ft']
-                    data_ft = json.loads(data_ft_str)
-                except JSONDecodeError as ex:
-                    logger.error("Error parsing data-store JSON: %r", ex)
-                except KeyError:
-                    logger.error("data-store attribute not found")
-                page_insights = data_ft['page_insights'][self._page_id]
-                publish_time = page_insights['post_context']['publish_time']
-                # description
-                nodes = post_body.find('p, header')
-                if nodes:
-                    post_text = []
-                    shared_text = []
-                    ended = False
-                    for node in nodes[1:]:
-                        if node.tag == 'header':
-                            ended = True
-
-                        # Remove '... More'
-                        # This button is meant to display the hidden text that
-                        # is already loaded. Not to be confused with the 'More'
-                        # that opens the article in a new page.
-                        if node.tag == 'p':
-                            node = make_html_element(
-                                html=node.html.replace(
-                                    '>… <', '><', 1
-                                ).replace('>More<', '', 1)
-                            )
-
-                        if not ended:
-                            post_text.append(node.text)
-                        else:
-                            shared_text.append(node.text)
-
-                    text = '\n'.join(itertools.chain(post_text, shared_text))
-                    post_text = '\n'.join(post_text)
-                    shared_text = '\n'.join(shared_text)
-
-            else:
-                logger.debug(f"!!-->cant get details from {video_url}")
-                publish_time = ""
-                text = ""
-                post_text = ""
-                shared_text = ""
-            videos.append({
-                "publish_time": publish_time,
-                "text": text,
-                'post_text': post_text,
-                'shared_text': shared_text,
-                **video
-            })
-        return videos
 
 
 class FacebookScraper:
@@ -493,26 +424,55 @@ class FacebookScraper:
         self.connector = connector
         self.request_delay = request_delay
 
-    def _extract_content(self, page_iterator, extractor_cls) -> dict:
-        extractor = extractor_cls(self.connector)
+    def _extract_content(self, page_iterator, extractor_cls,
+                         **options) -> dict:
+        extractor = extractor_cls(self.connector, **options)
         for page in page_iterator:
             for data_obj in extractor.extract(page):
                 yield data_obj
                 if self.request_delay:
                     time.sleep(self.request_delay)
 
-    def extract_videos(self, page_name) -> dict:
-        logging.info(f"extract videos ...")
+    def extract_videos(self, page_name, details=True) -> dict:
+        """ extract video informations.
+            Args:
+                page_name(str): slug of the facebook page.
+                details(bool): False if no video details needed.
+
+            Returns:
+                dict: video information
+        """
+        logging.info("extract videos ...")
         page_iterator = VideoGridPageParser.iterator(page_name, self.connector)
-        return self._extract_content(page_iterator, VideoExtractor)
+        return self._extract_content(page_iterator, VideoExtractor,
+                                     details=details)
 
     def extract_video_ids(self, page_name) -> dict:
-        return {}
+        """ extract video base informations.
+            Args:
+                page_name(str): slug of the facebook page.
 
-    def extract_video_details(self, video_data: list) -> dict:
-        return {}
+            Returns:
+                dict: video base information
+        """
+        logging.info("extract videos id (only) ...")
+        return self.extract_videos(page_name, details=False)
+
+    def extract_video_details(self, ids: list) -> dict:
+        """ extract video details.
+            Args:
+                ids(tuple(str, str)): tuple (page_id, video_id)
+
+            Returns:
+                dict: video details
+        """
+        extractor = VideoExtractor(self.connector)
+        for page_id, video_id in ids:
+            yield extractor.get_details(page_id, video_id)
+            if self.request_delay:
+                time.sleep(self.request_delay)
 
     def extract_posts(self, page_name) -> dict:
-        logging.info(f"extract posts ...")
+        logging.info("extract posts ...")
         page_iterator = PageParser.iterator(page_name, self.connector)
         return self._extract_content(page_iterator, PostExtractor)
