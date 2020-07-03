@@ -93,7 +93,7 @@ class PageParser:
         return self.html
 
     def get_next_url(self) -> str:
-        logger.debug("Looking for next page.")
+        logger.info("Looking for next page.")
         match = self.cursor_regex.search(self.cursor_blob)
         if match:
             return match.groups()[0]
@@ -102,7 +102,7 @@ class PageParser:
             value = match.groups()[0]
             encoded_value = value.encode('utf-8').decode('unicode_escape')
             return encoded_value.replace('\\/', '/')  # ?? senseless
-        logger.debug("No next page found.")
+        logger.info("No next page found.")
         return None
 
     def _parse(self):
@@ -160,7 +160,7 @@ class Extractor:
             if logger.isEnabledFor(logging.DEBUG):
                 import html2text
                 content = html2text.html2text(page_html.html)
-                logger.debug("The page content is:\n %s\n", content)
+                logger.info("The page content is:\n %s\n", content)
         return tags
 
     def _data_from_tag(self, tag):
@@ -290,10 +290,10 @@ class VideoExtractor(Extractor):
         match = page_id_regex.search(page_html.full_text)
         if match:
             page_id = match.groups()[0]
-            logger.debug(f"found page_id: {page_id}")
+            logger.info(f"found page_id: {page_id}")
             return page_id
         else:
-            logger.debug("can't find page_id")
+            logger.info("can't find page_id")
             return None
 
     def _get_tags(self, page_html) -> List[Element]:
@@ -328,14 +328,18 @@ class VideoExtractor(Extractor):
 
     def get_details(self, page_id, video_id):
         video_url = urljoin(FB_MOBILE_BASE_URL,
-                            f"story.php?story_fbid={video_id}" +
-                            f"&id={page_id}")
-        logger.debug(f"get details from {video_url}")
+                             f"story.php?story_fbid={video_id}" +
+                             f"&id={page_id}")
+        logger.info(f"get details from {video_url}")
         response = self.connector.get(video_url)
         html = response.html
         # sometime links are broken
         # maybe catch error, or skip when story_body not found
         post_body = html.find("div.story_body_container", first=True)
+        if not post_body:
+            logger.info("render html")
+            html.render()
+            post_body = html.find("div.story_body_container", first=True)
         # sometimes no post page
         if post_body:
 
@@ -383,7 +387,8 @@ class VideoExtractor(Extractor):
                 shared_text = '\n'.join(shared_text)
 
         else:
-            logger.debug(f"!!-->cant get details from {video_url}")
+            logger.info(f"!!-->cant get details from {video_url}\n")
+                         # f"{html}\n{html.html}")
             publish_time = ""
             text = ""
             post_text = ""
